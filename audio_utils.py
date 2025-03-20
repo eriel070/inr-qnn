@@ -309,7 +309,7 @@ def evaluate_and_visualize(model, dataset, model_name, seconds_to_show=5,
     else:
         psnr = float('inf')
     
-    print(f"=== {model_name} Evaluation ===")
+    print(f"=== {model_name} Evaluation (Denormalized)===")
     print(f"MSE: {mse:.6f}")
     print(f"PSNR: {psnr:.2f} dB")
     
@@ -328,7 +328,7 @@ def evaluate_and_visualize(model, dataset, model_name, seconds_to_show=5,
     # Save plot if path provided
     if save_plot:
         plt.savefig(save_plot, dpi=300, bbox_inches='tight')
-        print(f"Saved waveform plot to {save_plot}")
+        print(f"Saved waveform plot to {save_plot}\n")
         
     plt.show()
     
