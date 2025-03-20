@@ -1,2 +1,2 @@
 # inr-qnn
-Preliminary research
+Preliminary research projecc
