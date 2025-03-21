@@ -1,3 +1,5 @@
+import torch
+import torch.nn as nn
 import numpy as np
 import qutip as qt
 
@@ -29,7 +31,7 @@ class DQNN:
             for j in range(num_output_qubits):
                 # Create a unitary for each output qubit
                 if num_output_qubits - 1 != 0:
-                    # If we have more than one output qubit, extend with identity
+                    # If more than one output qubit, extend with identity
                     unitary = qt.tensor(self._random_qubit_unitary(num_input_qubits + 1), 
                                         self._tensoredId(num_output_qubits - 1))
                     unitary = self._swappedOp(unitary, num_input_qubits, num_input_qubits + j)
@@ -348,7 +350,7 @@ class DQNN:
         
         # Training rounds
         for k in range(training_rounds):
-            if verbose and k % 100 == 0:
+            if verbose and (k+1) % 100 == 0:
                 print(f"Training round {k}, fidelity: {loss:.6f}")
                 
             # Update unitaries
@@ -391,6 +393,30 @@ class DQNN:
             
         # Forward pass
         return self.quantum_forward(input_state)
+    
+    def count_parameters(self):
+        """
+        Count the number of parameters in the DQNN model.
+        
+        Returns:
+            Total number of parameters
+        """
+        total_params = 0
+        
+        for l in range(1, len(self.qnn_arch)):
+            num_input_qubits = self.qnn_arch[l-1]
+            num_output_qubits = self.qnn_arch[l]
+            
+            # Each perceptron has 2^(m_in+1) x 2^(m_in+1) complex parameters
+            # Due to unitarity, the number of free parameters is 4^(m_in+1) - 1
+            params_per_perceptron = 4 ** (num_input_qubits + 1) - 1
+            
+            # Total parameters for this layer
+            layer_params = num_output_qubits * params_per_perceptron
+            
+            total_params += layer_params
+        
+        return total_params
 
 
 def get_dqnn_model(qnn_arch=None, hidden_size=2, hidden_layers=2):

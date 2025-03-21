@@ -86,8 +86,7 @@ class AudioQuantumDataset:
         
     def _prepare_quantum_data(self):
         """Prepare quantum data from classical data"""
-        # For simplicity, we'll use amplitude encoding for now
-        # We encode the normalized amplitude directly into a qubit state
+        # Amplitude encoding is used to encode normalized amplitude into a qubit state
         # |ψ(t)⟩ = cos(θ/2)|0⟩ + sin(θ/2)|1⟩
         # where θ = π(amplitude + 1)/2 which maps [-1,1] to [0,π]
         
@@ -97,7 +96,6 @@ class AudioQuantumDataset:
             time = self.time_indices_normalized[i]
             amplitude = self.data_normalized[i]
             
-            # Encode time as classical parameter (not quantum)
             # Encode amplitude into single-qubit state
             theta = np.pi * (amplitude + 1) / 2
             qubit_state = np.cos(theta/2) * qt.basis(2, 0) + np.sin(theta/2) * qt.basis(2, 1)
@@ -127,7 +125,7 @@ class AudioQuantumDataset:
         """Convert a quantum state to a classical amplitude"""
         # Extract amplitude from quantum state
         # For a state |ψ⟩ = cos(θ/2)|0⟩ + sin(θ/2)|1⟩
-        # We extract θ and map [0,π] back to [-1,1]
+        # Extract θ and map [0,π] back to [-1,1]
         
         # Calculate probability of |1⟩, which is sin^2(θ/2)
         if quantum_state.type == 'ket':
@@ -184,8 +182,7 @@ class AudioQuantumDataset:
             time, amplitude_state = self.quantum_data[idx]
             
             # Create input state from time (classical parameter)
-            # For DQNN, we need to encode the time into a quantum state
-            # We'll use amplitude encoding: |ψ⟩ = cos(πt)|0⟩ + sin(πt)|1⟩
+            # Amplitude encoding: |ψ⟩ = cos(πt)|0⟩ + sin(πt)|1⟩
             input_state = np.cos(np.pi * time) * qt.basis(2, 0) + np.sin(np.pi * time) * qt.basis(2, 1)
             
             # The target is the amplitude encoded as a quantum state
@@ -239,28 +236,27 @@ class AudioQuantumDataset:
         return self.original_data
 
 
-def train_dqnn(model, dataset, num_epochs=1000, batch_size=128, lda=1.0, ep=0.01, 
-               device=None, log_interval=50):
+def train_dqnn(model, dataset, num_epochs=1000, batch_size=128, training_rounds=1, lda=1.0, ep=0.01, log_interval=50):
     """
-    Train a DQNN model on an audio dataset.
+    Train a DQNN model on an audio dataset using batched training.
     
     Args:
         model: The DQNN model to train
         dataset: AudioQuantumDataset instance
         num_epochs: Number of training epochs
         batch_size: Batch size for training
+        training_rounds: Number of training rounds per batch
         lda: Lambda parameter (regularization)
         ep: Epsilon parameter (learning rate)
-        device: Device to train on (not used for quantum simulation)
         log_interval: Interval for logging progress
         
     Returns:
         Trained model and history of losses
     """
     losses = []
-    best_loss = float('-inf')  # We maximize fidelity (higher is better)
+    best_loss = float('-inf')  # Maximizing fidelity (higher is better)
     
-    print(f"Starting DQNN training for {num_epochs} epochs...")
+    print(f"Starting DQNN batched training for {num_epochs} epochs with {training_rounds} training rounds per batch...")
     
     # Training loop
     pbar = tqdm(range(num_epochs), desc="Training")
@@ -270,8 +266,8 @@ def train_dqnn(model, dataset, num_epochs=1000, batch_size=128, lda=1.0, ep=0.01
         # Get random batch
         training_data = dataset.get_batch(batch_size)
         
-        # Train for one round
-        loss_values = model.train(training_data, lda, ep, 1, verbose=False)
+        # Train for specified number of rounds
+        loss_values = model.train(training_data, lda, ep, training_rounds, verbose=False)
         current_loss = loss_values[-1][1]
             
         # Store loss
@@ -283,21 +279,59 @@ def train_dqnn(model, dataset, num_epochs=1000, batch_size=128, lda=1.0, ep=0.01
         
         # Update progress bar
         if epoch % log_interval == 0 or epoch == num_epochs - 1:
-            pbar.set_description(f"DQNN Training: fidelity={current_loss:.6f}, best={best_loss:.6f}")
+            pbar.set_description(f"DQNN Training: quantum fidelity={current_loss:.6f}, best={best_loss:.6f}")
                 
     training_time = time.time() - start_time
-    print(f"DQNN Training completed in {training_time:.2f} seconds. Final fidelity: {losses[-1]:.6f}, Best fidelity: {best_loss:.6f}")
+    print(f"DQNN Training completed in {training_time:.2f} seconds. Final quantum fidelity: {losses[-1]:.6f}, Best: {best_loss:.6f}")
     
     return model, losses
 
 
-def evaluate_dqnn(model, dataset, num_points=None):
+def train_dqnn_full_dataset(model, dataset, training_rounds=100, max_points=None, lda=1.0, ep=0.01):
     """
-    Evaluate a trained DQNN by generating audio samples.
+    Train a DQNN model on an audio dataset using full dataset training approach.
+    Matches the authors' original implementation more closely.
+    
+    Args:
+        model: The DQNN model to train
+        dataset: AudioQuantumDataset instance
+        training_rounds: Number of training rounds on the full dataset
+        max_points: Maximum number of data points to use (None = all)
+        lda: Lambda parameter (regularization)
+        ep: Epsilon parameter (learning rate)
+        
+    Returns:
+        Trained model and history of losses
+    """
+    # Get sequential data (full dataset or limited size)
+    training_data = dataset.get_sequential_data(num_points=max_points)
+    
+    print(f"Starting DQNN full dataset training with {len(training_data)} data points for {training_rounds} rounds...")
+    start_time = time.time()
+    
+    # Train on the full dataset for multiple rounds
+    loss_values = model.train(training_data, lda, ep, training_rounds, verbose=True)
+    
+    training_time = time.time() - start_time
+    final_loss = loss_values[-1][1]
+    
+    print(f"DQNN full dataset training completed in {training_time:.2f} seconds.")
+    print(f"Final quantum fidelity: {final_loss:.6f}")
+    
+    # Extract just the loss values for plotting
+    losses = [loss[1] for loss in loss_values]
+    
+    return model, losses
+
+
+def evaluate_dqnn(model, dataset, batch_size=None, num_points=None):
+    """
+    Evaluate a trained DQNN by generating audio samples in batches.
     
     Args:
         model: Trained DQNN model
         dataset: AudioQuantumDataset instance
+        batch_size: Batch size for evaluation (None = use entire dataset at once)
         num_points: Number of points to evaluate (None = all)
     
     Returns:
@@ -309,16 +343,29 @@ def evaluate_dqnn(model, dataset, num_points=None):
         
     sequential_data = dataset.get_sequential_data(num_points)
     
+    # Use default batch size if none provided
+    if batch_size is None or batch_size <= 0:
+        batch_size = 128  # Reasonable default
+    
     # Generate predictions
     predictions = []
     
-    for input_state, _ in sequential_data:
-        # Get prediction 
-        output_state = model.predict(input_state)
+    # Process in batches with progress bar for better user experience
+    pbar = tqdm(range(0, len(sequential_data), batch_size), desc="Evaluating DQNN")
+    
+    for i in pbar:
+        batch = sequential_data[i:min(i+batch_size, len(sequential_data))]
+        batch_predictions = []
         
-        # Convert quantum output to classical amplitude
-        amplitude = dataset.quantum_to_amplitude(output_state)
-        predictions.append(amplitude)
+        for input_state, _ in batch:
+            # Get prediction
+            output_state = model.predict(input_state)
+            
+            # Convert quantum output to classical amplitude
+            amplitude = dataset.quantum_to_amplitude(output_state)
+            batch_predictions.append(amplitude)
+            
+        predictions.extend(batch_predictions)
     
     return np.array(predictions)
 
@@ -363,7 +410,7 @@ def play_audio(audio_data, sample_rate=44100, title="Audio"):
 
 
 def evaluate_and_visualize(model, dataset, model_name="DQNN", seconds_to_show=5, 
-                          save_audio=None, save_plot=None):
+                          save_audio=None, save_plot=None, batch_size=128):
     """
     Comprehensive evaluation and visualization of a trained model.
     
@@ -374,6 +421,7 @@ def evaluate_and_visualize(model, dataset, model_name="DQNN", seconds_to_show=5,
         seconds_to_show: Number of seconds to visualize
         save_audio: Optional path to save audio output (None to skip saving)
         save_plot: Optional path to save waveform plot (None to skip saving)
+        batch_size: Batch size for evaluation
     
     Returns:
         predictions, ground_truth, mse, psnr
@@ -382,7 +430,7 @@ def evaluate_and_visualize(model, dataset, model_name="DQNN", seconds_to_show=5,
     ground_truth = dataset.get_original_audio()
     
     # Generate predictions
-    predictions = evaluate_dqnn(model, dataset)
+    predictions = evaluate_dqnn(model, dataset, batch_size=batch_size)
     
     # Handle NaN or Inf values
     predictions = np.nan_to_num(predictions, nan=0.0, posinf=0.0, neginf=0.0)
@@ -395,7 +443,7 @@ def evaluate_and_visualize(model, dataset, model_name="DQNN", seconds_to_show=5,
         predictions = predictions[:min_length]
         ground_truth = ground_truth[:min_length]
     
-    # Calculate metrics
+    # Calculate classical domain metrics
     mse = np.mean((predictions - ground_truth)**2)
     max_amp = np.max(np.abs(ground_truth))
     if max_amp > 0:
@@ -403,20 +451,31 @@ def evaluate_and_visualize(model, dataset, model_name="DQNN", seconds_to_show=5,
     else:
         psnr = 0.0
     
-    print(f"=== {model_name} Evaluation ===")
-    print(f"MSE: {mse:.6f}")
-    print(f"PSNR: {psnr:.2f} dB")
+    print(f"=== {model_name} Evaluation (Classical Domain) ===")
+    print(f"Classical MSE: {mse:.6f}")
+    print(f"Classical PSNR: {psnr:.2f} dB")
+    print(f"Note: Training used quantum fidelity but evaluation uses classical metrics")
     
     # Visualize waveform (first few seconds)
-    plot_audio_waveform(predictions, ground_truth, dataset.sample_rate, 
-                    title=f"{model_name} Waveform Comparison", seconds=seconds_to_show)
+    plt.figure(figsize=(12, 5))
+    samples = min(int(seconds_to_show * dataset.sample_rate), len(predictions), len(ground_truth))
+    t = np.arange(samples) / dataset.sample_rate
+    plt.plot(t, ground_truth[:samples], label='Ground Truth', alpha=0.7)
+    plt.plot(t, predictions[:samples], label=f'{model_name} Prediction', alpha=0.7)
+    plt.title(f"{model_name} Waveform Comparison")
+    plt.xlabel("Time (s)")
+    plt.ylabel("Amplitude")
+    plt.legend()
+    plt.grid(True)
     
     # Save plot if path provided
     if save_plot:
         plt.savefig(save_plot, dpi=300, bbox_inches='tight')
         print(f"Saved waveform plot to {save_plot}\n")
         
-    # Play audio clips
+    plt.show()
+    
+    # Play audio clips (limited to 5 seconds for convenience)
     seconds_to_play = min(5, len(ground_truth)/dataset.sample_rate)
     samples_to_play = int(seconds_to_play * dataset.sample_rate)
     
@@ -434,28 +493,29 @@ def evaluate_and_visualize(model, dataset, model_name="DQNN", seconds_to_show=5,
     return predictions, ground_truth, mse, psnr
 
 
-def create_dqnn_trained_model(audio_file, output_path=None, hidden_size=2, num_layers=2, 
-                            lda=1.0, ep=0.01, num_epochs=500, batch_size=64):
+def create_dqnn_trained_model(audio_file, output_path=None, qnn_arch=None, hidden_size=2, num_layers=2, 
+                             lda=1.0, ep=0.01, num_epochs=500, batch_size=64, training_rounds=1,
+                             use_full_dataset=False, max_data_points=None):
     """
     Create and train a DQNN model on an audio file.
     
     Args:
         audio_file: Path to audio file
         output_path: Path to save outputs (None to skip saving)
-        hidden_size: Number of qubits in hidden layers
-        num_layers: Number of hidden layers
+        qnn_arch: Architecture of the DQNN as a list of qubit counts per layer
+        hidden_size: Number of qubits in hidden layers (used only if qnn_arch is None)
+        num_layers: Number of hidden layers (used only if qnn_arch is None)
         lda: Lambda parameter (regularization)
         ep: Epsilon parameter (learning rate)
-        num_epochs: Number of training epochs
-        batch_size: Batch size for training
+        num_epochs: Number of training epochs (used only for batched training)
+        batch_size: Batch size for training (used only for batched training)
+        training_rounds: Number of training rounds per batch or on full dataset
+        use_full_dataset: If True, use full dataset training approach instead of batching
+        max_data_points: Maximum number of data points to use for full dataset training
         
     Returns:
         Trained model, dataset, and evaluation results
-    """
-    print("\n" + "="*50)
-    print(f"Training DQNN model on {os.path.basename(audio_file)}")
-    print("="*50)
-    
+    """ 
     # Create dataset
     dataset = AudioQuantumDataset(
         audio_file,
@@ -464,28 +524,57 @@ def create_dqnn_trained_model(audio_file, output_path=None, hidden_size=2, num_l
     )
     
     # Configure model
-    qnn_arch = [1] + [hidden_size] * num_layers + [1]
+    if qnn_arch is None:
+        qnn_arch = [1] + [hidden_size] * num_layers + [1]
+    
     model = get_dqnn_model(qnn_arch=qnn_arch)
     
     # Print model details
+    num_params = model.count_parameters()
     print(f"DQNN architecture: {qnn_arch}")
+    print(f"DQNN model parameters: {num_params:,}")
     
-    # Train model
-    model, losses = train_dqnn(
-        model,
-        dataset,
-        num_epochs=num_epochs,
-        batch_size=batch_size,
-        lda=lda,
-        ep=ep
-    )
+    # Train model using the selected approach
+    if use_full_dataset:
+        # Use full dataset training approach (authors' method)
+        model, losses = train_dqnn_full_dataset(
+            model,
+            dataset,
+            training_rounds=training_rounds,
+            max_points=max_data_points,
+            lda=lda,
+            ep=ep
+        )
+        
+        # For plotting - create a list of epochs/rounds
+        x_values = list(range(len(losses)))
+    else:
+        # Use batched training approach
+        model, losses = train_dqnn(
+            model,
+            dataset,
+            num_epochs=num_epochs,
+            batch_size=batch_size,
+            training_rounds=training_rounds,
+            lda=lda,
+            ep=ep
+        )
+        
+        # x_values will be epoch numbers
+        x_values = list(range(len(losses)))
     
     # Plot training curve
     fig = plt.figure(figsize=(10, 4))
-    plt.plot(losses)
-    plt.title("DQNN Training Fidelity")
-    plt.xlabel("Epoch")
-    plt.ylabel("Fidelity (Higher is better)")
+    plt.plot(x_values, losses)
+    
+    if use_full_dataset:
+        plt.title("DQNN Training Fidelity (Full Dataset Approach)")
+        plt.xlabel("Training Round")
+    else:
+        plt.title("DQNN Training Fidelity (Batched Approach)")
+        plt.xlabel("Epoch")
+        
+    plt.ylabel("Quantum Fidelity (Higher is better)")
     plt.grid(True)
     plt.show()
     
@@ -502,9 +591,8 @@ def create_dqnn_trained_model(audio_file, output_path=None, hidden_size=2, num_l
         dataset,
         model_name="DQNN",
         save_audio=save_audio,
-        save_plot=save_plot
+        save_plot=save_plot,
+        batch_size=batch_size  # Use same batch size as training
     )
-    
-    print(f"\nFinal DQNN metrics: MSE={mse:.6f}, PSNR={psnr:.2f}dB\n")
     
     return model, dataset, (predictions, ground_truth, mse, psnr)
