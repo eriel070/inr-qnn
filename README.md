@@ -1,4 +1,4 @@
-# inr-qnn
+# Classical Simulation of Dissipative Quantum Neural Networks (DQNNs) as Implicit Neural Representations (INRs)
 Preliminary research project
 
 Experiments in project_center.ipynb
