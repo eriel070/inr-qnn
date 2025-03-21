@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 import qutip as qt
+from tqdm.notebook import tqdm
 
 class DQNN:
     """
@@ -345,13 +346,11 @@ class DQNN:
         loss = self._calculate_loss(training_data, output_states)
         loss_values.append([s, loss])
         
-        if verbose:
-            print(f"Initial fidelity: {loss:.6f}")
-        
         # Training rounds
-        for k in range(training_rounds):
-            if verbose and (k+1) % 100 == 0:
-                print(f"Training round {k}, fidelity: {loss:.6f}")
+        iterator = tqdm(range(training_rounds), desc="Training") if verbose else range(training_rounds)
+        for k in iterator:
+            if verbose:
+                iterator.set_description(f"Round {k+1}: fidelity={loss:.6f}")
                 
             # Update unitaries
             for l in range(1, len(self.qnn_arch)):
@@ -371,9 +370,6 @@ class DQNN:
             output_states = [stored_states[k][-1] for k in range(len(stored_states))]
             loss = self._calculate_loss(training_data, output_states)
             loss_values.append([s, loss])
-            
-        if verbose:
-            print(f"Final fidelity: {loss:.6f}")
             
         return loss_values
     

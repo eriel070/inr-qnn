@@ -236,7 +236,7 @@ class AudioQuantumDataset:
         return self.original_data
 
 
-def train_dqnn(model, dataset, num_epochs=1000, batch_size=128, training_rounds=1, lda=1.0, ep=0.01, log_interval=50):
+def train_dqnn(model, dataset, num_epochs=1000, batch_size=128, training_rounds=1, lda=1.0, ep=0.01, log_interval=5):
     """
     Train a DQNN model on an audio dataset using batched training.
     
@@ -256,7 +256,7 @@ def train_dqnn(model, dataset, num_epochs=1000, batch_size=128, training_rounds=
     losses = []
     best_loss = float('-inf')  # Maximizing fidelity (higher is better)
     
-    print(f"Starting DQNN batched training for {num_epochs} epochs with {training_rounds} training rounds per batch...")
+    print(f"\nStarting DQNN batched training for {num_epochs} epochs with {training_rounds} training rounds per batch...")
     
     # Training loop
     pbar = tqdm(range(num_epochs), desc="Training")
@@ -306,7 +306,7 @@ def train_dqnn_full_dataset(model, dataset, training_rounds=100, max_points=None
     # Get sequential data (full dataset or limited size)
     training_data = dataset.get_sequential_data(num_points=max_points)
     
-    print(f"Starting DQNN full dataset training with {len(training_data)} data points for {training_rounds} rounds...")
+    print(f"\nStarting DQNN full dataset training with {len(training_data)} data points for {training_rounds} rounds...")
     start_time = time.time()
     
     # Train on the full dataset for multiple rounds
@@ -568,10 +568,10 @@ def create_dqnn_trained_model(audio_file, output_path=None, qnn_arch=None, hidde
     plt.plot(x_values, losses)
     
     if use_full_dataset:
-        plt.title("DQNN Training Fidelity (Full Dataset Approach)")
-        plt.xlabel("Training Round")
+        plt.title("DQNN Training Fidelity")
+        plt.xlabel("Round")
     else:
-        plt.title("DQNN Training Fidelity (Batched Approach)")
+        plt.title("DQNN Training Fidelity")
         plt.xlabel("Epoch")
         
     plt.ylabel("Quantum Fidelity (Higher is better)")
