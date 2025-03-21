@@ -1,11 +1,19 @@
+--extra-index-url https://download.pytorch.org/whl/cu118
 torch
 torchvision
 torchaudio
 torchsummary
+transformers
+import-ipynb
 ipython
 ipykernel
 ipywidgets
 tqdm
 librosa
 soundfile
+numpy
+scipy
+matplotlib
+datasets
+# qutip
 
