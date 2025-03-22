@@ -14,7 +14,8 @@ from dqnn_core import get_dqnn_model
 class AudioQuantumDataset:
     """
     Dataset for training quantum neural networks on audio signals.
-    Converts classical audio data to quantum states for DQNN training.
+    Converts classical audio data to quantum states for DQNN training using
+    a bijective encoding-decoding framework.
     """
     def __init__(self, audio_path, max_seconds=None, normalize_time=True, normalize_amplitude=True):
         """
@@ -81,75 +82,131 @@ class AudioQuantumDataset:
         # Store normalized data
         self.data_normalized = data_normalized
         
+        # Store pairs of time and amplitude for easier access
+        self.data_pairs = list(zip(self.time_indices_normalized, self.data_normalized))
+        
         # Convert classical data to quantum format
         self._prepare_quantum_data()
         
     def _prepare_quantum_data(self):
         """Prepare quantum data from classical data"""
-        # Amplitude encoding is used to encode normalized amplitude into a qubit state
-        # |ψ(t)⟩ = cos(θ/2)|0⟩ + sin(θ/2)|1⟩
-        # where θ = π(amplitude + 1)/2 which maps [-1,1] to [0,π]
-        
         self.quantum_data = []
         
         for i in range(self.data_length):
             time = self.time_indices_normalized[i]
             amplitude = self.data_normalized[i]
             
-            # Encode amplitude into single-qubit state
-            theta = np.pi * (amplitude + 1) / 2
-            qubit_state = np.cos(theta/2) * qt.basis(2, 0) + np.sin(theta/2) * qt.basis(2, 1)
+            # Encode time and amplitude into quantum states
+            time_state = self.encode_time(time)
+            amplitude_state = self.encode_amplitude(amplitude)
             
-            # Store time and quantum state
-            self.quantum_data.append((time, qubit_state))
+            # Store time and quantum states
+            self.quantum_data.append((time, time_state, amplitude_state))
     
-    def amplitude_to_quantum(self, amplitude):
-        """Convert a classical amplitude to a quantum state"""
-        # Normalize amplitude if needed
-        if self.normalize_amplitude:
-            if self.amplitude_range < 1e-6:
-                abs_max = np.max(np.abs(self.original_data))
-                amplitude_normalized = amplitude / (abs_max if abs_max > 0 else 1.0)
-            else:
-                amplitude_normalized = 2.0 * (amplitude - self.amplitude_min) / self.amplitude_range - 1.0
-        else:
-            amplitude_normalized = amplitude
-            
-        # Convert to quantum state
-        theta = np.pi * (amplitude_normalized + 1) / 2
-        qubit_state = np.cos(theta/2) * qt.basis(2, 0) + np.sin(theta/2) * qt.basis(2, 1)
+    def encode_time(self, time):
+        """Convert normalized time to a quantum state
         
-        return qubit_state
+        Maps time ∈ [0, 1] to ω ∈ [0, π) and creates a pure state
+        |ψ⟩ = cos(ω)|0⟩ + sin(ω)|1⟩
+        """
+        # Map time ∈ [0, 1] to ω ∈ [0, π)
+        omega = np.pi * time
+        
+        # Create pure state with φ = 0
+        state = np.cos(omega) * qt.basis(2, 0) + np.sin(omega) * qt.basis(2, 1)
+        return state
     
-    def quantum_to_amplitude(self, quantum_state):
-        """Convert a quantum state to a classical amplitude"""
-        # Extract amplitude from quantum state
-        # For a state |ψ⟩ = cos(θ/2)|0⟩ + sin(θ/2)|1⟩
-        # Extract θ and map [0,π] back to [-1,1]
+    def decode_time(self, quantum_state):
+        """Convert a quantum state to normalized time
         
-        # Calculate probability of |1⟩, which is sin^2(θ/2)
+        Works with both pure states and mixed states (density matrices)
+        """
+        # Extract Bloch vector components
         if quantum_state.type == 'ket':
-            prob_1 = abs(quantum_state[1][0][0]) ** 2
-        else:  # Density matrix
-            prob_1 = quantum_state[1,1].real
+            rho = quantum_state * quantum_state.dag()
+        else:
+            rho = quantum_state
+        
+        # Safely extract real numerical values from QuTip objects
+        if isinstance(rho[0,1], qt.Qobj):
+            r_x = float(2 * np.real(rho[0,1].full()[0,0]))
+            r_y = float(2 * np.imag(rho[0,1].full()[0,0]))
+            r_z = float(np.real((rho[0,0] - rho[1,1]).full()[0,0]))
+        else:
+            r_x = float(2 * np.real(rho[0,1]))
+            r_y = float(2 * np.imag(rho[0,1]))
+            r_z = float(np.real(rho[0,0] - rho[1,1]))
+        
+        # Calculate ω using both x and z components
+        # Use arctan2 for correct quadrant handling
+        omega = 0.5 * np.arctan2(r_x, r_z)
+        
+        # Ensure omega is in [0, π)
+        if omega < 0:
+            omega += np.pi
             
-        # Extract θ
-        theta = 2 * np.arcsin(np.sqrt(prob_1))
+        # Map ω ∈ [0, π) back to time ∈ [0, 1]
+        time = omega / np.pi
         
-        # Map [0,π] to [-1,1]
-        amplitude_normalized = 2 * theta / np.pi - 1
+        return time
+    
+    def encode_amplitude(self, amplitude):
+        """Convert a normalized amplitude to a quantum state
         
-        # Denormalize if needed
+        Maps amplitude ∈ [-1, 1] to ω ∈ [0, π) and creates a pure state
+        |ψ⟩ = cos(ω)|0⟩ + sin(ω)|1⟩
+        """
+        # Map amplitude ∈ [-1, 1] to ω ∈ [0, π)
+        omega = np.pi * (amplitude + 1) / 2
+        
+        # Create pure state with φ = 0
+        state = np.cos(omega) * qt.basis(2, 0) + np.sin(omega) * qt.basis(2, 1)
+        return state
+    
+    def decode_amplitude(self, quantum_state):
+        """Convert a quantum state to normalized amplitude
+        
+        Works with both pure states and mixed states (density matrices)
+        """
+        # Extract Bloch vector components
+        if quantum_state.type == 'ket':
+            rho = quantum_state * quantum_state.dag()
+        else:
+            rho = quantum_state
+        
+        # Safely extract real numerical values from QuTip objects
+        # The .full() method converts Qobj to numpy array
+        if isinstance(rho[0,1], qt.Qobj):
+            r_x = float(2 * np.real(rho[0,1].full()[0,0]))
+            r_y = float(2 * np.imag(rho[0,1].full()[0,0]))
+            r_z = float(np.real((rho[0,0] - rho[1,1]).full()[0,0]))
+        else:
+            r_x = float(2 * np.real(rho[0,1]))
+            r_y = float(2 * np.imag(rho[0,1]))
+            r_z = float(np.real(rho[0,0] - rho[1,1]))
+        
+        # Calculate ω using both x and z components
+        # Use arctan2 for correct quadrant handling
+        omega = 0.5 * np.arctan2(r_x, r_z)
+        
+        # Ensure omega is in [0, π)
+        if omega < 0:
+            omega += np.pi
+            
+        # Map ω ∈ [0, π) back to amplitude ∈ [-1, 1]
+        amplitude = 2 * (omega / np.pi) - 1
+        
+        return amplitude
+    
+    def amplitude_to_original(self, amplitude_normalized):
+        """Convert normalized amplitude to original amplitude value"""
         if self.normalize_amplitude:
             if self.amplitude_range < 1e-6:
                 abs_max = np.max(np.abs(self.original_data))
-                amplitude = amplitude_normalized * (abs_max if abs_max > 0 else 1.0)
+                return amplitude_normalized * (abs_max if abs_max > 0 else 1.0)
             else:
-                amplitude = (amplitude_normalized + 1) * self.amplitude_range / 2 + self.amplitude_min
-        else:
-            amplitude = amplitude_normalized
-            
-        return amplitude
+                return (amplitude_normalized + 1) * self.amplitude_range / 2 + self.amplitude_min
+        return amplitude_normalized
         
     def __len__(self):
         return self.data_length
@@ -179,11 +236,10 @@ class AudioQuantumDataset:
         training_pairs = []
         
         for idx in indices:
-            time, amplitude_state = self.quantum_data[idx]
+            _, time_state, amplitude_state = self.quantum_data[idx]
             
-            # Create input state from time (classical parameter)
-            # Amplitude encoding: |ψ⟩ = cos(πt)|0⟩ + sin(πt)|1⟩
-            input_state = np.cos(np.pi * time) * qt.basis(2, 0) + np.sin(np.pi * time) * qt.basis(2, 1)
+            # The input is the time encoded as a quantum state
+            input_state = time_state
             
             # The target is the amplitude encoded as a quantum state
             target_state = amplitude_state
@@ -215,16 +271,16 @@ class AudioQuantumDataset:
         # Create sequential data
         sequential_data = []
         
-        for i, time in enumerate(times):
-            # Find nearest time point in our dataset
+        for time in times:
+            # Create input state (time encoded as quantum state)
+            input_state = self.encode_time(time)
+            
+            # Find nearest time point in our dataset for the target
             idx = int(time * (self.data_length - 1) if self.normalize_time else time)
             idx = min(idx, self.data_length - 1)
             
-            # Get amplitude state for this time
-            _, amplitude_state = self.quantum_data[idx]
-            
-            # Create input state
-            input_state = np.cos(np.pi * time) * qt.basis(2, 0) + np.sin(np.pi * time) * qt.basis(2, 1)
+            # Get target amplitude state
+            _, _, amplitude_state = self.quantum_data[idx]
             
             # Add to sequential data
             sequential_data.append([input_state, amplitude_state])
@@ -234,6 +290,107 @@ class AudioQuantumDataset:
     def get_original_audio(self):
         """Get the original unprocessed audio data"""
         return self.original_data
+
+
+def verify_quantum_encoding(dataset, seconds_to_show=None, save_plot=None, num_samples=None):
+    """
+    Verify the quantum encoding/decoding process by comparing the original signal
+    with a version where both time and amplitude have been encoded to quantum states
+    and decoded back.
+    
+    Args:
+        dataset: AudioQuantumDataset instance
+        seconds_to_show: Number of seconds of audio to show in the plot
+        num_samples: Number of samples to use for verification
+        
+    Returns:
+        Dictionary with metrics and signals
+    """
+    print("\nVerifying quantum encoding/decoding fidelity...")
+    
+    # Use entire dataset time if seconds_to_show is None
+    max_points = len(dataset) if seconds_to_show is None else min(len(dataset), int(seconds_to_show * dataset.sample_rate))
+    
+    # Use all available points if num_samples is None
+    num_points = max_points if num_samples is None else min(max_points, num_samples)
+    
+    # Create evenly spaced time points for the selected range
+    original_times = np.linspace(0, 1, num_points) if dataset.normalize_time else np.linspace(0, dataset.data_length-1, num_points)
+    
+    # Get original amplitudes for these times
+    original_amplitudes = []
+    for t in original_times:
+        idx = int(t * (dataset.data_length - 1) if dataset.normalize_time else t)
+        idx = min(idx, dataset.data_length - 1)
+        original_amplitudes.append(dataset.data_normalized[idx])
+    
+    # Encode and decode both time and amplitude
+    decoded_times = []
+    decoded_amplitudes = []
+    
+    print(f"Processing {num_points} samples for both time and amplitude encoding/decoding...")
+    for i, (time, amplitude) in enumerate(zip(original_times, original_amplitudes)):
+        # Encode to quantum states
+        time_state = dataset.encode_time(time)
+        amplitude_state = dataset.encode_amplitude(amplitude)
+        
+        # Convert to density matrices (simulating what would happen in DQNN)
+        time_density_matrix = time_state * time_state.dag()
+        amplitude_density_matrix = amplitude_state * amplitude_state.dag()
+        
+        # Decode back to classical values
+        decoded_time = dataset.decode_time(time_density_matrix)
+        decoded_amplitude = dataset.decode_amplitude(amplitude_density_matrix)
+        
+        decoded_times.append(decoded_time)
+        decoded_amplitudes.append(decoded_amplitude)
+    
+    # Calculate metrics for time and amplitude
+    original_times_array = np.array(original_times)
+    decoded_times_array = np.array(decoded_times)
+    original_amplitudes_array = np.array(original_amplitudes)
+    decoded_amplitudes_array = np.array(decoded_amplitudes)
+    
+    # Calculate error metrics
+    time_mse = np.mean((original_times_array - decoded_times_array)**2)
+    amplitude_mse = np.mean((original_amplitudes_array - decoded_amplitudes_array)**2)
+    
+    # Convert to seconds for plotting
+    original_seconds = original_times_array * (dataset.data_length - 1) / dataset.sample_rate if dataset.normalize_time else original_times_array / dataset.sample_rate
+    decoded_seconds = decoded_times_array * (dataset.data_length - 1) / dataset.sample_rate if dataset.normalize_time else decoded_times_array / dataset.sample_rate
+    
+    # Denormalize amplitudes for visualization
+    original_denorm = np.array([dataset.amplitude_to_original(a) for a in original_amplitudes_array])
+    decoded_denorm = np.array([dataset.amplitude_to_original(a) for a in decoded_amplitudes_array])
+    
+    # Plot comparison of original vs. fully decoded waveform
+    plt.figure(figsize=(9, 3))
+    plt.plot(original_seconds, original_denorm, label='Original Signal', alpha=0.7)
+    plt.plot(decoded_seconds, decoded_denorm, label='Quantum Encoded-Decoded', alpha=0.7)
+    plt.title(f"Quantum Encoding/Decoding Verification\nTime MSE={time_mse:.6f}, Amplitude MSE={amplitude_mse:.6f}")
+    plt.xlabel('Time (s)')
+    plt.ylabel('Amplitude')
+    plt.legend()
+    plt.grid(True)
+    
+    if save_plot:
+        plt.savefig(save_plot, dpi=300, bbox_inches='tight')
+        print(f"Saved encoding verification plot to {save_plot}\n")
+    
+    plt.show()
+    
+    print(f"Encoding/decoding verification metrics:")
+    print(f"Time MSE: {time_mse:.6f}")
+    print(f"Amplitude MSE: {amplitude_mse:.6f}")
+    
+    return {
+        'time_mse': time_mse,
+        'amplitude_mse': amplitude_mse,
+        'original_times': original_seconds,
+        'decoded_times': decoded_seconds,
+        'original_amplitudes': original_denorm,
+        'decoded_amplitudes': decoded_denorm
+    }
 
 
 def train_dqnn(model, dataset, num_epochs=1000, batch_size=128, training_rounds=1, lda=1.0, ep=0.01, log_interval=5):
@@ -324,18 +481,18 @@ def train_dqnn_full_dataset(model, dataset, training_rounds=100, max_points=None
     return model, losses
 
 
-def evaluate_dqnn(model, dataset, batch_size=None, num_points=None):
+def evaluate_dqnn(model, dataset, num_points=None, collect_quantum_states=False):
     """
-    Evaluate a trained DQNN by generating audio samples in batches.
+    Evaluate a trained DQNN by generating audio samples and optionally collecting quantum states.
     
     Args:
         model: Trained DQNN model
         dataset: AudioQuantumDataset instance
-        batch_size: Batch size for evaluation (None = use entire dataset at once)
         num_points: Number of points to evaluate (None = all)
+        collect_quantum_states: If True, collect quantum states for analysis
     
     Returns:
-        Generated audio samples at the original sample rate
+        Generated audio samples and optionally quantum states for analysis
     """
     # Get sequential data for evaluation
     if num_points is None:
@@ -343,31 +500,36 @@ def evaluate_dqnn(model, dataset, batch_size=None, num_points=None):
         
     sequential_data = dataset.get_sequential_data(num_points)
     
-    # Use default batch size if none provided
-    if batch_size is None or batch_size <= 0:
-        batch_size = 128  # Reasonable default
-    
     # Generate predictions
     predictions = []
     
-    # Process in batches with progress bar for better user experience
-    pbar = tqdm(range(0, len(sequential_data), batch_size), desc="Evaluating DQNN")
+    # For quantum state analysis
+    target_states = []
+    output_states = []
     
-    for i in pbar:
-        batch = sequential_data[i:min(i+batch_size, len(sequential_data))]
-        batch_predictions = []
+    # Process in a single loop with progress bar
+    pbar = tqdm(sequential_data, desc="Evaluating DQNN")
+    
+    for input_state, target_state in pbar:
+        # Get prediction
+        output_state = model.predict(input_state)
         
-        for input_state, _ in batch:
-            # Get prediction
-            output_state = model.predict(input_state)
-            
-            # Convert quantum output to classical amplitude
-            amplitude = dataset.quantum_to_amplitude(output_state)
-            batch_predictions.append(amplitude)
-            
-        predictions.extend(batch_predictions)
+        # Convert quantum output to classical amplitude
+        amplitude = dataset.decode_amplitude(output_state)
+        predictions.append(amplitude)
+        
+        # Collect quantum states if requested
+        if collect_quantum_states:
+            target_states.append(target_state)
+            output_states.append(output_state)
     
-    return np.array(predictions)
+    # Convert normalized predictions to original scale
+    predictions = np.array([dataset.amplitude_to_original(a) for a in predictions])
+    
+    if collect_quantum_states:
+        return predictions, target_states, output_states
+    
+    return predictions
 
 
 def plot_audio_waveform(predictions, ground_truth, sample_rate=44100, title="Waveform Comparison", seconds=5):
@@ -410,7 +572,8 @@ def play_audio(audio_data, sample_rate=44100, title="Audio"):
 
 
 def evaluate_and_visualize(model, dataset, model_name="DQNN", seconds_to_show=5, 
-                          save_audio=None, save_plot=None, batch_size=128):
+                          save_audio=None, save_plot=None, analyze_quantum_states=False,
+                          save_quantum_plot=None):
     """
     Comprehensive evaluation and visualization of a trained model.
     
@@ -421,7 +584,7 @@ def evaluate_and_visualize(model, dataset, model_name="DQNN", seconds_to_show=5,
         seconds_to_show: Number of seconds to visualize
         save_audio: Optional path to save audio output (None to skip saving)
         save_plot: Optional path to save waveform plot (None to skip saving)
-        batch_size: Batch size for evaluation
+        analyze_quantum_states: If True, analyze the quantum states
     
     Returns:
         predictions, ground_truth, mse, psnr
@@ -429,11 +592,19 @@ def evaluate_and_visualize(model, dataset, model_name="DQNN", seconds_to_show=5,
     # Get original ground truth data
     ground_truth = dataset.get_original_audio()
     
-    # Generate predictions
-    predictions = evaluate_dqnn(model, dataset, batch_size=batch_size)
+    # Generate predictions and collect quantum states if needed
+    if analyze_quantum_states:
+        predictions, target_states, output_states = evaluate_dqnn(
+            model, dataset, collect_quantum_states=True)
+        
+        # Analyze quantum states
+        quantum_state_analysis(model_name, target_states, output_states, dataset, save_plot=save_quantum_plot)
+    else:
+        predictions = evaluate_dqnn(model, dataset)
     
-    # Handle NaN or Inf values
-    predictions = np.nan_to_num(predictions, nan=0.0, posinf=0.0, neginf=0.0)
+    # Check for NaN or Inf values
+    if np.any(np.isnan(predictions)) or np.any(np.isinf(predictions)):
+        raise ValueError(f"Invalid values detected in model predictions: NaN: {np.any(np.isnan(predictions))}, Inf: {np.any(np.isinf(predictions))}")
     
     # Make sure predictions match the length of ground truth
     if len(predictions) != len(ground_truth):
@@ -451,7 +622,7 @@ def evaluate_and_visualize(model, dataset, model_name="DQNN", seconds_to_show=5,
     else:
         psnr = 0.0
     
-    print(f"=== {model_name} Evaluation (Classical Domain) ===")
+    print(f"\n=== {model_name} Evaluation (Classical Domain) ===")
     print(f"Classical MSE: {mse:.6f}")
     print(f"Classical PSNR: {psnr:.2f} dB")
     print(f"Note: Training used quantum fidelity but evaluation uses classical metrics")
@@ -493,9 +664,214 @@ def evaluate_and_visualize(model, dataset, model_name="DQNN", seconds_to_show=5,
     return predictions, ground_truth, mse, psnr
 
 
+def quantum_state_analysis(model_name, target_states, output_states, dataset, max_samples=None, save_plot=None):
+    """
+    Analyze quantum states produced by the DQNN and compare with target states.
+    
+    Args:
+        target_states: List of target quantum states
+        output_states: List of output quantum states from DQNN
+        dataset: AudioQuantumDataset instance for decoding
+        max_samples: Maximum number of samples to display on plots
+        save_plot: Optional path to save the analysis plot
+        
+    Returns:
+        Dictionary with analysis results
+    """
+    print(f"\n=== {model_name} Evaluation (Quantum Domain) ===")
+    
+    # Extract Bloch vectors and calculate statistics
+    target_bloch = []
+    output_bloch = []
+    output_purities = []
+    angles_between = []
+    target_amplitudes = []
+    output_amplitudes = []
+    fidelities = []
+    
+    # Limit samples if necessary
+    if max_samples is None or max_samples >= len(output_states):
+        sample_indices = np.arange(len(output_states), dtype=int)
+    else:
+        np.linspace(0, len(output_states)-1, max_samples, dtype=int)
+
+    # Analyze each quantum state
+    for i in sample_indices:
+        target = target_states[i]
+        output = output_states[i]
+        
+        # Convert to density matrix if needed
+        if target.type == 'ket':
+            target_dm = target * target.dag()
+        else:
+            target_dm = target
+            
+        # Calculate target Bloch vector
+        r_x_t = float(2 * np.real((target_dm[0,1]).full()[0,0] if isinstance(target_dm[0,1], qt.Qobj) else target_dm[0,1]))
+        r_y_t = float(2 * np.imag((target_dm[0,1]).full()[0,0] if isinstance(target_dm[0,1], qt.Qobj) else target_dm[0,1]))
+        r_z_t = float(np.real(((target_dm[0,0] - target_dm[1,1])).full()[0,0] if isinstance(target_dm[0,0], qt.Qobj) else (target_dm[0,0] - target_dm[1,1])))
+        target_bloch.append([r_x_t, r_y_t, r_z_t])
+        
+        # Calculate output Bloch vector
+        r_x_o = float(2 * np.real((output[0,1]).full()[0,0] if isinstance(output[0,1], qt.Qobj) else output[0,1]))
+        r_y_o = float(2 * np.imag((output[0,1]).full()[0,0] if isinstance(output[0,1], qt.Qobj) else output[0,1]))
+        r_z_o = float(np.real(((output[0,0] - output[1,1])).full()[0,0] if isinstance(output[0,0], qt.Qobj) else (output[0,0] - output[1,1])))
+        output_bloch.append([r_x_o, r_y_o, r_z_o])
+        
+        # Calculate output purity
+        purity = float(np.real((output * output).tr()))
+        output_purities.append(purity)
+        
+        # Calculate angle between Bloch vectors (if output is not at origin)
+        output_length = np.sqrt(r_x_o**2 + r_y_o**2 + r_z_o**2)
+        if output_length > 1e-6:
+            # Normalize both vectors
+            target_norm = np.array([r_x_t, r_y_t, r_z_t]) / np.sqrt(r_x_t**2 + r_y_t**2 + r_z_t**2)
+            output_norm = np.array([r_x_o, r_y_o, r_z_o]) / output_length
+            
+            # Dot product
+            cos_angle = np.clip(np.dot(target_norm, output_norm), -1.0, 1.0)
+            angle = np.arccos(cos_angle) * 180 / np.pi  # in degrees
+            angles_between.append(angle)
+        else:
+            angles_between.append(np.nan)
+            
+        # Calculate fidelity between target and output states
+        if target.type == 'ket' and output.type == 'oper':
+            # For pure target and mixed output
+            product = target.dag() * output * target
+            if isinstance(product, complex):
+                fidelity = float(abs(product))
+            else:
+                fidelity = float(abs(product[0,0]))
+        else:
+            # Convert to density matrices if needed
+            if target.type != 'oper':
+                target_for_fid = target * target.dag()
+            else:
+                target_for_fid = target
+            if output.type != 'oper':
+                output_for_fid = output * output.dag()
+            else:
+                output_for_fid = output
+            fidelity = float(qt.fidelity(target_for_fid, output_for_fid))
+        
+        fidelities.append(fidelity)
+            
+        # Decode to classical amplitudes
+        target_amplitude = dataset.decode_amplitude(target_dm)
+        output_amplitude = dataset.decode_amplitude(output)
+        target_amplitudes.append(target_amplitude)
+        output_amplitudes.append(output_amplitude)
+    
+    # Convert to arrays
+    target_bloch = np.array(target_bloch)
+    output_bloch = np.array(output_bloch)
+    output_purities = np.array(output_purities)
+    angles_between = np.array(angles_between)
+    target_amplitudes = np.array(target_amplitudes)
+    output_amplitudes = np.array(output_amplitudes)
+    fidelities = np.array(fidelities)
+    
+    # Calculate Bloch vector lengths
+    output_bloch_lengths = np.sqrt(np.sum(output_bloch**2, axis=1))
+    
+    # Print summary statistics
+    print(f"Average purity: {np.mean(output_purities):.4f}")
+    print(f"Average Bloch vector length: {np.mean(output_bloch_lengths):.4f}")
+    print(f"Pure states (purity > 0.99): {np.sum(output_purities > 0.99)/len(output_purities)*100:.2f}%")
+    print(f"Average angle between target and output Bloch vectors: {np.nanmean(angles_between):.2f}°")
+    print(f"Average fidelity: {np.mean(fidelities):.4f}")
+    
+    # Create visualization with new layout
+    fig = plt.figure(figsize=(12, 8))
+    
+    # 1. Top left: Plot purity distribution
+    ax1 = fig.add_subplot(221)
+    ax1.hist(output_purities, bins=20, alpha=0.7)
+    ax1.axvline(x=1.0, color='r', linestyle='--', label='Pure State')
+    ax1.set_xlabel('Quantum State Purity')
+    ax1.set_ylabel('Count')
+    ax1.set_title('DQNN Output State Purity Distribution')
+    ax1.grid(True)
+    ax1.legend()
+    
+    # 2. Top right: 2D visualization of Bloch vectors projected onto xz-plane
+    ax2 = fig.add_subplot(222)
+    # Draw unit circle representing pure states
+    theta = np.linspace(0, 2*np.pi, 100)
+    ax2.plot(np.cos(theta), np.sin(theta), 'k--', alpha=0.3)
+    
+    # Plot target states
+    target_x = target_bloch[:, 0]
+    target_z = target_bloch[:, 2]
+    ax2.scatter(target_x, target_z, c='b', marker='o', alpha=0.5, label='Target States')
+    
+    # Plot output states
+    output_x = output_bloch[:, 0]
+    output_z = output_bloch[:, 2]
+    ax2.scatter(output_x, output_z, c='r', marker='x', alpha=0.5, label='Output States')
+    
+    # Draw some lines connecting target and output
+    # Only draw a subset to avoid cluttering
+    for i in range(0, len(sample_indices), max(1, len(sample_indices)//20)):
+        ax2.plot([target_x[i], output_x[i]], [target_z[i], output_z[i]], 'g-', alpha=0.3)
+    
+    ax2.set_xlabel('x-component of Bloch Vector')
+    ax2.set_ylabel('z-component of Bloch Vector')
+    ax2.set_title('Bloch Vector Projections (xz-plane)')
+    ax2.grid(True)
+    ax2.legend()
+    ax2.axis('equal')
+    
+    # 3. Bottom left: Plot angle distribution between target and output
+    ax3 = fig.add_subplot(223)
+    valid_angles = angles_between[~np.isnan(angles_between)]
+    if len(valid_angles) > 0:
+        ax3.hist(valid_angles, bins=20, alpha=0.7)
+        ax3.set_xlabel('Angle Between Target and Output Bloch Vectors (degrees)')
+        ax3.set_ylabel('Count')
+        ax3.set_title('Alignment Between Target and DQNN Output States')
+        ax3.grid(True)
+    else:
+        ax3.text(0.5, 0.5, 'No valid angles to display', ha='center', va='center')
+    
+    # 4. Bottom right: Plot fidelity distribution
+    ax4 = fig.add_subplot(224)
+    ax4.hist(fidelities, bins=20, alpha=0.7)
+    ax4.axvline(x=1.0, color='r', linestyle='--', label='Perfect Fidelity')
+    ax4.set_xlabel('Fidelity Between Target and Output States')
+    ax4.set_ylabel('Count')
+    ax4.set_title('DQNN Output Fidelity Distribution')
+    ax4.grid(True)
+    ax4.legend()
+    
+    plt.tight_layout()
+    
+    # Save plot if path provided
+    if save_plot:
+        plt.savefig(save_plot, dpi=300, bbox_inches='tight')
+        print(f"Saved quantum state analysis plot to {save_plot}")
+        
+    plt.show()
+    
+    # Return analysis results
+    return {
+        'purities': output_purities,
+        'bloch_lengths': output_bloch_lengths,
+        'angles_between': angles_between,
+        'fidelities': fidelities,
+        'target_bloch': target_bloch,
+        'output_bloch': output_bloch,
+        'target_amplitudes': target_amplitudes,
+        'output_amplitudes': output_amplitudes
+    }
+
+
 def create_dqnn_trained_model(audio_file, output_path=None, qnn_arch=None, hidden_size=2, num_layers=2, 
                              lda=1.0, ep=0.01, num_epochs=500, batch_size=64, training_rounds=1,
-                             use_full_dataset=False, max_data_points=None):
+                             use_full_dataset=False, max_data_points=None, verify_encoding=False,
+                             analyze_quantum_states=False):
     """
     Create and train a DQNN model on an audio file.
     
@@ -512,6 +888,8 @@ def create_dqnn_trained_model(audio_file, output_path=None, qnn_arch=None, hidde
         training_rounds: Number of training rounds per batch or on full dataset
         use_full_dataset: If True, use full dataset training approach instead of batching
         max_data_points: Maximum number of data points to use for full dataset training
+        verify_encoding: If True, verify the quantum encoding/decoding process
+        analyze_quantum_states: If True, analyze the quantum states produced by the model
         
     Returns:
         Trained model, dataset, and evaluation results
@@ -533,6 +911,16 @@ def create_dqnn_trained_model(audio_file, output_path=None, qnn_arch=None, hidde
     num_params = model.count_parameters()
     print(f"DQNN architecture: {qnn_arch}")
     print(f"DQNN model parameters: {num_params:,}")
+    
+    # Verify encoding/decoding if requested
+    if verify_encoding:
+        save_verification_plot = (f"{output_path}/quantum_encoding_verification.png"
+                                  if output_path else None)
+        verification_results = verify_quantum_encoding(
+            dataset, 
+            seconds_to_show=5,
+            save_plot=save_verification_plot
+        )
     
     # Train model using the selected approach
     if use_full_dataset:
@@ -585,6 +973,8 @@ def create_dqnn_trained_model(audio_file, output_path=None, qnn_arch=None, hidde
     print("\nEvaluating DQNN model...")
     save_audio = f"{output_path}/dqnn_audio.wav" if output_path else None
     save_plot = f"{output_path}/dqnn_waveform.png" if output_path else None
+    save_quantum_plot = (f"{output_path}/dqnn_quantum_state_analysis.png"
+                         if output_path and analyze_quantum_states else None)
     
     predictions, ground_truth, mse, psnr = evaluate_and_visualize(
         model,
@@ -592,7 +982,8 @@ def create_dqnn_trained_model(audio_file, output_path=None, qnn_arch=None, hidde
         model_name="DQNN",
         save_audio=save_audio,
         save_plot=save_plot,
-        batch_size=batch_size  # Use same batch size as training
+        analyze_quantum_states=analyze_quantum_states,
+        save_quantum_plot=save_quantum_plot
     )
     
     return model, dataset, (predictions, ground_truth, mse, psnr)
