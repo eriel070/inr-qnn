@@ -366,7 +366,7 @@ def verify_quantum_encoding(dataset, seconds_to_show=None, save_plot=None, num_s
     # Plot comparison of original vs. fully decoded waveform
     plt.figure(figsize=(9, 3))
     plt.plot(original_seconds, original_denorm, label='Original Signal', alpha=0.7)
-    plt.plot(decoded_seconds, decoded_denorm, label='Quantum Encoded-Decoded', alpha=0.7)
+    plt.plot(decoded_seconds, decoded_denorm, label='Quantum Encoded-Decoded', alpha=0.7, color='green')
     plt.title(f"Quantum Encoding/Decoding Verification\nTime MSE={time_mse:.6f}, Amplitude MSE={amplitude_mse:.6f}")
     plt.xlabel('Time (s)')
     plt.ylabel('Amplitude')
