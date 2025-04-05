@@ -199,7 +199,7 @@ def train_inr_model(model, dataset, num_epochs=1000, batch_size=1024, lr=1e-4,
         if epoch % log_interval == 0 or epoch == num_epochs - 1:
             pbar.set_description(f"Training: loss={current_loss:.6f}, best={best_loss:.6f}")
     
-    print(f"Training completed. Final loss: {losses[-1]:.6f}, Best loss: {best_loss:.6f}")
+    print(f"Training completed. Final loss: {losses[-1]:.5e}, Best loss: {best_loss:.5e}")
     return model, losses
 
 
@@ -232,7 +232,7 @@ def evaluate_audio_model(model, dataset, device='cuda'):
     return predictions
 
 
-def plot_audio_waveform(predictions, ground_truth, sample_rate=44100, title="Waveform Comparison", seconds=5):
+def plot_audio_waveform(predictions, ground_truth, sample_rate=44100, title="Waveform Comparison", seconds=None, save_path=None):
     """
     Plot comparison between predicted and ground truth audio waveforms.
     
@@ -242,20 +242,32 @@ def plot_audio_waveform(predictions, ground_truth, sample_rate=44100, title="Wav
         sample_rate: Audio sample rate
         title: Plot title
         seconds: Number of seconds to show
+        save_path: Optional path to save the plot
     """
     # Determine number of samples to show
-    samples = min(int(seconds * sample_rate), len(predictions), len(ground_truth))
+    if seconds is None:
+        samples = min(len(predictions), len(ground_truth))
+    else:
+        samples = min(int(seconds * sample_rate), len(predictions), len(ground_truth))
     
-    plt.figure(figsize=(12, 5))
+    fig = plt.figure(figsize=(12, 5))
     t = np.arange(samples) / sample_rate
-    plt.plot(t, ground_truth[:samples], label='Ground Truth', alpha=0.7)
-    plt.plot(t, predictions[:samples], label='Predicted', alpha=0.7)
-    plt.title(title)
-    plt.xlabel('Time (s)')
-    plt.ylabel('Amplitude')
-    plt.legend()
+    plt.plot(t, ground_truth[:samples], label='Target', alpha=0.7)
+    plt.plot(t, predictions[:samples], label='Output', alpha=0.7)
+    plt.title(title, fontsize=22)
+    plt.xlabel('Time (s)', fontsize=16)
+    plt.ylabel('Amplitude', fontsize=16)
+    plt.legend(fontsize=14, loc='upper left')
     plt.grid(True)
+    
+    # Save the figure if a path is provided
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        print(f"Saved waveform plot to {save_path}\n")
+        
     plt.show()
+    
+    return fig
 
 
 def play_audio(audio_data, sample_rate=44100, title="Audio"):
@@ -271,7 +283,7 @@ def play_audio(audio_data, sample_rate=44100, title="Audio"):
     return ipd.Audio(audio_data, rate=sample_rate)
 
 
-def evaluate_and_visualize(model, dataset, model_name, seconds_to_show=5, 
+def evaluate_and_visualize(model, dataset, model_name, seconds_to_show=None, 
                        save_audio=None, save_plot=None):
     """
     Comprehensive evaluation and visualization of a trained model.
@@ -310,31 +322,25 @@ def evaluate_and_visualize(model, dataset, model_name, seconds_to_show=5,
         psnr = float('inf')
     
     print(f"=== {model_name} Evaluation (Denormalized)===")
-    print(f"MSE: {mse:.6f}")
+    print(f"MSE: {mse:.5e}")
     print(f"PSNR: {psnr:.2f} dB")
     
-    # Visualize waveform (first few seconds)
-    plt.figure(figsize=(12, 5))
-    samples = min(int(seconds_to_show * dataset.sample_rate), len(predictions), len(ground_truth))
-    t = np.arange(samples) / dataset.sample_rate
-    plt.plot(t, ground_truth[:samples], label='Ground Truth', alpha=0.7)
-    plt.plot(t, predictions[:samples], label=f'{model_name} Prediction', alpha=0.7)
-    plt.title(f"{model_name} Waveform Comparison")
-    plt.xlabel("Time (s)")
-    plt.ylabel("Amplitude")
-    plt.legend()
-    plt.grid(True)
+    # Use plot_audio_waveform for visualization
+    plot_title = f"{model_name}"
+    plot_audio_waveform(
+        predictions, 
+        ground_truth, 
+        dataset.sample_rate, 
+        plot_title, 
+        seconds_to_show,
+        save_path=save_plot
+    )
     
-    # Save plot if path provided
-    if save_plot:
-        plt.savefig(save_plot, dpi=300, bbox_inches='tight')
-        print(f"Saved waveform plot to {save_plot}\n")
-        
-    plt.show()
-    
-    # Play audio clips (limited to 5 seconds for convenience)
-    seconds_to_play = min(5, len(ground_truth)/dataset.sample_rate)
-    samples_to_play = int(seconds_to_play * dataset.sample_rate)
+    # Play audio clips
+    if seconds_to_show is None:
+        samples_to_play = len(ground_truth)  # Play entire audio
+    else:
+        samples_to_play = min(int(seconds_to_show * dataset.sample_rate), len(ground_truth))
     
     # Play ground truth audio
     display(play_audio(ground_truth[:samples_to_play], dataset.sample_rate, "Ground Truth Audio"))

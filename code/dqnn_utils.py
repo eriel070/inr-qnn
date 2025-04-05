@@ -365,13 +365,14 @@ def verify_quantum_encoding(dataset, seconds_to_show=None, save_plot=None, num_s
     
     # Plot comparison of original vs. fully decoded waveform
     plt.figure(figsize=(9, 3))
-    plt.plot(original_seconds, original_denorm, label='Original Signal', alpha=0.7)
-    plt.plot(decoded_seconds, decoded_denorm, label='Quantum Encoded-Decoded', alpha=0.7, color='green')
-    plt.title(f"Quantum Encoding/Decoding Verification\nTime MSE={time_mse:.6f}, Amplitude MSE={amplitude_mse:.6f}")
-    plt.xlabel('Time (s)')
-    plt.ylabel('Amplitude')
-    plt.legend()
-    plt.grid(True)
+    plt.plot(original_seconds, original_denorm, label='Pre-Encoding', alpha=0.7)
+    plt.plot(decoded_seconds, decoded_denorm, label='Post-Decoding', alpha=0.7, color='green')
+    plt.suptitle("Quantum-Classical Transfer Integrity", fontsize=16, y=1.06)
+    plt.title(f"Time MSE={time_mse:.3e}, Amplitude MSE={amplitude_mse:.3e}", fontsize=13, pad=10)
+    plt.xlabel('Time (s)', fontsize=13)
+    plt.ylabel('Amplitude', fontsize=13)
+    plt.legend(fontsize=12, loc='upper left')
+    plt.grid(True) 
     
     if save_plot:
         plt.savefig(save_plot, dpi=300, bbox_inches='tight')
@@ -380,8 +381,8 @@ def verify_quantum_encoding(dataset, seconds_to_show=None, save_plot=None, num_s
     plt.show()
     
     print(f"Encoding/decoding verification metrics:")
-    print(f"Time MSE: {time_mse:.6f}")
-    print(f"Amplitude MSE: {amplitude_mse:.6f}")
+    print(f"Time MSE: {time_mse:.4e}")
+    print(f"Amplitude MSE: {amplitude_mse:.4e}")
     
     return {
         'time_mse': time_mse,
@@ -393,7 +394,7 @@ def verify_quantum_encoding(dataset, seconds_to_show=None, save_plot=None, num_s
     }
 
 
-def train_dqnn(model, dataset, num_epochs=1000, batch_size=128, training_rounds=1, lda=1.0, ep=0.01, log_interval=5):
+def train_dqnn(model, dataset, num_epochs=1000, batch_size=128, training_rounds=1, lda=1.0, ep=0.01, log_interval=1):
     """
     Train a DQNN model on an audio dataset using batched training.
     
@@ -532,7 +533,7 @@ def evaluate_dqnn(model, dataset, num_points=None, collect_quantum_states=False)
     return predictions
 
 
-def plot_audio_waveform(predictions, ground_truth, sample_rate=44100, title="Waveform Comparison", seconds=5):
+def plot_audio_waveform(predictions, ground_truth, sample_rate=44100, title="Waveform Comparison", seconds=None, save_path=None):
     """
     Plot comparison between predicted and ground truth audio waveforms.
     
@@ -541,20 +542,30 @@ def plot_audio_waveform(predictions, ground_truth, sample_rate=44100, title="Wav
         ground_truth: Ground truth audio samples
         sample_rate: Audio sample rate
         title: Plot title
-        seconds: Number of seconds to show
+        seconds: Number of seconds to show (None = show all)
+        save_path: Optional path to save the plot
     """
     # Determine number of samples to show
-    samples = min(int(seconds * sample_rate), len(predictions), len(ground_truth))
+    if seconds is None:
+        samples = min(len(predictions), len(ground_truth))
+    else:
+        samples = min(int(seconds * sample_rate), len(predictions), len(ground_truth))
     
-    plt.figure(figsize=(12, 5))
+    fig = plt.figure(figsize=(12, 5))
     t = np.arange(samples) / sample_rate
-    plt.plot(t, ground_truth[:samples], label='Ground Truth', alpha=0.7)
-    plt.plot(t, predictions[:samples], label='DQNN Predicted', alpha=0.7)
-    plt.title(title)
-    plt.xlabel('Time (s)')
-    plt.ylabel('Amplitude')
-    plt.legend()
+    plt.plot(t, ground_truth[:samples], label='Target', alpha=0.7)
+    plt.plot(t, predictions[:samples], label='Output', alpha=0.7)
+    plt.title(title, fontsize=22)
+    plt.xlabel('Time (s)', fontsize=16)
+    plt.ylabel('Amplitude', fontsize=16)
+    plt.legend(fontsize=14, loc='upper left')
     plt.grid(True)
+    
+    # Save the figure if a path is provided
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        print(f"Saved waveform plot to {save_path}\n")
+        
     plt.show()
 
 
@@ -571,7 +582,7 @@ def play_audio(audio_data, sample_rate=44100, title="Audio"):
     return ipd.Audio(audio_data, rate=sample_rate)
 
 
-def evaluate_and_visualize(model, dataset, model_name="DQNN", seconds_to_show=5, 
+def evaluate_and_visualize(model, dataset, model_name="DQNN", seconds_to_show=None, 
                           save_audio=None, save_plot=None, analyze_quantum_states=False,
                           save_quantum_plot=None):
     """
@@ -591,16 +602,9 @@ def evaluate_and_visualize(model, dataset, model_name="DQNN", seconds_to_show=5,
     """
     # Get original ground truth data
     ground_truth = dataset.get_original_audio()
-    
-    # Generate predictions and collect quantum states if needed
-    if analyze_quantum_states:
-        predictions, target_states, output_states = evaluate_dqnn(
-            model, dataset, collect_quantum_states=True)
-        
-        # Analyze quantum states
-        quantum_state_analysis(model_name, target_states, output_states, dataset, save_plot=save_quantum_plot)
-    else:
-        predictions = evaluate_dqnn(model, dataset)
+
+    # Generate predictions and collect quantum states if needed later
+    predictions, target_states, output_states = evaluate_dqnn(model, dataset, collect_quantum_states=True)
     
     # Check for NaN or Inf values
     if np.any(np.isnan(predictions)) or np.any(np.isinf(predictions)):
@@ -623,32 +627,31 @@ def evaluate_and_visualize(model, dataset, model_name="DQNN", seconds_to_show=5,
         psnr = 0.0
     
     print(f"\n=== {model_name} Evaluation (Classical Domain) ===")
-    print(f"Classical MSE: {mse:.6f}")
+    print(f"Classical MSE: {mse:.5e}")
     print(f"Classical PSNR: {psnr:.2f} dB")
     print(f"Note: Training used quantum fidelity but evaluation uses classical metrics")
     
-    # Visualize waveform (first few seconds)
-    plt.figure(figsize=(12, 5))
-    samples = min(int(seconds_to_show * dataset.sample_rate), len(predictions), len(ground_truth))
-    t = np.arange(samples) / dataset.sample_rate
-    plt.plot(t, ground_truth[:samples], label='Ground Truth', alpha=0.7)
-    plt.plot(t, predictions[:samples], label=f'{model_name} Prediction', alpha=0.7)
-    plt.title(f"{model_name} Waveform Comparison")
-    plt.xlabel("Time (s)")
-    plt.ylabel("Amplitude")
-    plt.legend()
-    plt.grid(True)
+    # Visualize waveform
+    plot_title = f"{model_name}"
+    plot_audio_waveform(
+        predictions, 
+        ground_truth, 
+        dataset.sample_rate, 
+        plot_title, 
+        seconds_to_show,
+        save_path=save_plot
+    )
+
+    # Analyze quantum states if needed *
+    if analyze_quantum_states:
+        quantum_state_analysis(model_name, target_states, output_states, dataset, save_plot=save_quantum_plot)
+        print()
     
-    # Save plot if path provided
-    if save_plot:
-        plt.savefig(save_plot, dpi=300, bbox_inches='tight')
-        print(f"Saved waveform plot to {save_plot}\n")
-        
-    plt.show()
-    
-    # Play audio clips (limited to 5 seconds for convenience)
-    seconds_to_play = min(5, len(ground_truth)/dataset.sample_rate)
-    samples_to_play = int(seconds_to_play * dataset.sample_rate)
+    # Play audio clips
+    if seconds_to_show is None:
+        samples_to_play = len(ground_truth)  # Play entire audio
+    else:
+        samples_to_play = min(int(seconds_to_show * dataset.sample_rate), len(ground_truth))
     
     # Play ground truth audio
     display(play_audio(ground_truth[:samples_to_play], dataset.sample_rate, "Ground Truth Audio"))
@@ -814,8 +817,8 @@ def quantum_state_analysis(model_name, target_states, output_states, dataset, ma
     
     # Draw some lines connecting target and output
     # Only draw a subset to avoid cluttering
-    for i in range(0, len(sample_indices), max(1, len(sample_indices)//20)):
-        ax2.plot([target_x[i], output_x[i]], [target_z[i], output_z[i]], 'g-', alpha=0.3)
+    for i in range(len(sample_indices)):
+        ax2.plot([target_x[i], output_x[i]], [target_z[i], output_z[i]], 'g-', alpha=0.17)
     
     ax2.set_xlabel('x-component of Bloch Vector')
     ax2.set_ylabel('z-component of Bloch Vector')
@@ -851,7 +854,7 @@ def quantum_state_analysis(model_name, target_states, output_states, dataset, ma
     # Save plot if path provided
     if save_plot:
         plt.savefig(save_plot, dpi=300, bbox_inches='tight')
-        print(f"Saved quantum state analysis plot to {save_plot}")
+        print(f"Saved quantum state analysis plot to {save_plot}\n")
         
     plt.show()
     
@@ -870,8 +873,8 @@ def quantum_state_analysis(model_name, target_states, output_states, dataset, ma
 
 def create_dqnn_trained_model(audio_file, output_path=None, qnn_arch=None, hidden_size=2, num_layers=2, 
                              lda=1.0, ep=0.01, num_epochs=500, batch_size=64, training_rounds=1,
-                             use_full_dataset=False, max_data_points=None, verify_encoding=False,
-                             analyze_quantum_states=False):
+                             use_full_dataset=False, max_data_points=None, seconds_to_show=None,
+                             verify_encoding=False, analyze_quantum_states=False):
     """
     Create and train a DQNN model on an audio file.
     
@@ -918,7 +921,7 @@ def create_dqnn_trained_model(audio_file, output_path=None, qnn_arch=None, hidde
                                   if output_path else None)
         verification_results = verify_quantum_encoding(
             dataset, 
-            seconds_to_show=5,
+            seconds_to_show=seconds_to_show,
             save_plot=save_verification_plot
         )
     
@@ -956,13 +959,13 @@ def create_dqnn_trained_model(audio_file, output_path=None, qnn_arch=None, hidde
     plt.plot(x_values, losses)
     
     if use_full_dataset:
-        plt.title("DQNN Training Fidelity")
-        plt.xlabel("Round")
+        plt.title("DQNN", fontsize=22)
+        plt.xlabel("Round", fontsize=16)
     else:
-        plt.title("DQNN Training Fidelity")
-        plt.xlabel("Epoch")
+        plt.title("DQNN", fontsize=22)
+        plt.xlabel("Epoch", fontsize=16)
         
-    plt.ylabel("Quantum Fidelity (Higher is better)")
+    plt.ylabel("Fidelity", fontsize=16)
     plt.grid(True)
     plt.show()
     
@@ -980,6 +983,7 @@ def create_dqnn_trained_model(audio_file, output_path=None, qnn_arch=None, hidde
         model,
         dataset,
         model_name="DQNN",
+        seconds_to_show=seconds_to_show,
         save_audio=save_audio,
         save_plot=save_plot,
         analyze_quantum_states=analyze_quantum_states,
