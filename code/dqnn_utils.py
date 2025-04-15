@@ -6,6 +6,7 @@ import os
 import time
 import IPython.display as ipd
 import soundfile as sf
+import librosa
 from tqdm.notebook import tqdm
 
 from dqnn_core import get_dqnn_model
@@ -28,7 +29,7 @@ class AudioQuantumDataset:
             normalize_amplitude: If True, normalize amplitudes to [-1, 1]
         """
         # Load audio file - explicitly set sample rate to None to use file's rate
-        data, self.sample_rate = sf.read(audio_path, dtype='float32')
+        data, self.sample_rate = sf.read(audio_path, dtype='float64')   # audio_path data is float32
         
         # Convert to mono if stereo (averaging channels)
         if len(data.shape) > 1 and data.shape[1] > 1:
@@ -102,8 +103,9 @@ class AudioQuantumDataset:
             
             # Store time and quantum states
             self.quantum_data.append((time, time_state, amplitude_state))
-    
-    def encode_time(self, time):
+
+    @staticmethod
+    def encode_time(time):
         """Convert normalized time to a quantum state
         
         Maps time ∈ [0, 1] to ω ∈ [0, π) and creates a pure state
@@ -115,8 +117,9 @@ class AudioQuantumDataset:
         # Create pure state with φ = 0
         state = np.cos(omega) * qt.basis(2, 0) + np.sin(omega) * qt.basis(2, 1)
         return state
-    
-    def decode_time(self, quantum_state):
+
+    @staticmethod
+    def decode_time(quantum_state):
         """Convert a quantum state to normalized time
         
         Works with both pure states and mixed states (density matrices)
@@ -149,8 +152,9 @@ class AudioQuantumDataset:
         time = omega / np.pi
         
         return time
-    
-    def encode_amplitude(self, amplitude):
+
+    @staticmethod
+    def encode_amplitude(amplitude):
         """Convert a normalized amplitude to a quantum state
         
         Maps amplitude ∈ [-1, 1] to ω ∈ [0, π) and creates a pure state
@@ -162,8 +166,9 @@ class AudioQuantumDataset:
         # Create pure state with φ = 0
         state = np.cos(omega) * qt.basis(2, 0) + np.sin(omega) * qt.basis(2, 1)
         return state
-    
-    def decode_amplitude(self, quantum_state):
+
+    @staticmethod
+    def decode_amplitude(quantum_state):
         """Convert a quantum state to normalized amplitude
         
         Works with both pure states and mixed states (density matrices)
@@ -275,7 +280,7 @@ class AudioQuantumDataset:
             # Create input state (time encoded as quantum state)
             input_state = self.encode_time(time)
             
-            # Find nearest time point in our dataset for the target
+            # Find nearest time point in dataset for the target
             idx = int(time * (self.data_length - 1) if self.normalize_time else time)
             idx = min(idx, self.data_length - 1)
             
@@ -360,8 +365,8 @@ def verify_quantum_encoding(dataset, seconds_to_show=None, save_plot=None, num_s
     decoded_seconds = decoded_times_array * (dataset.data_length - 1) / dataset.sample_rate if dataset.normalize_time else decoded_times_array / dataset.sample_rate
     
     # Denormalize amplitudes for visualization
-    original_denorm = np.array([dataset.amplitude_to_original(a) for a in original_amplitudes_array])
-    decoded_denorm = np.array([dataset.amplitude_to_original(a) for a in decoded_amplitudes_array])
+    original_denorm = dataset.amplitude_to_original(original_amplitudes_array)
+    decoded_denorm = dataset.amplitude_to_original(decoded_amplitudes_array)
     
     # Plot comparison of original vs. fully decoded waveform
     plt.figure(figsize=(9, 3))
@@ -525,7 +530,7 @@ def evaluate_dqnn(model, dataset, num_points=None, collect_quantum_states=False)
             output_states.append(output_state)
     
     # Convert normalized predictions to original scale
-    predictions = np.array([dataset.amplitude_to_original(a) for a in predictions])
+    predictions = dataset.amplitude_to_original(np.array(predictions))
     
     if collect_quantum_states:
         return predictions, target_states, output_states
@@ -533,7 +538,8 @@ def evaluate_dqnn(model, dataset, num_points=None, collect_quantum_states=False)
     return predictions
 
 
-def plot_audio_waveform(predictions, ground_truth, sample_rate=44100, title="Waveform Comparison", seconds=None, save_path=None):
+def plot_audio_waveform(predictions, ground_truth, sample_rate=44100, title="Waveform Comparison",
+                        seconds=None, save_path=None, color_original='tab:blue', color_prediction='tab:orange'):
     """
     Plot comparison between predicted and ground truth audio waveforms.
     
@@ -553,8 +559,8 @@ def plot_audio_waveform(predictions, ground_truth, sample_rate=44100, title="Wav
     
     fig = plt.figure(figsize=(12, 5))
     t = np.arange(samples) / sample_rate
-    plt.plot(t, ground_truth[:samples], label='Target', alpha=0.7)
-    plt.plot(t, predictions[:samples], label='Output', alpha=0.7)
+    plt.plot(t, ground_truth[:samples], label='Target', alpha=0.7, color=color_original)
+    plt.plot(t, predictions[:samples], label='Output', alpha=0.7, color=color_prediction)
     plt.title(title, fontsize=22)
     plt.xlabel('Time (s)', fontsize=16)
     plt.ylabel('Amplitude', fontsize=16)
@@ -991,3 +997,163 @@ def create_dqnn_trained_model(audio_file, output_path=None, qnn_arch=None, hidde
     )
     
     return model, dataset, (predictions, ground_truth, mse, psnr)
+    
+
+################################################################################
+
+def inference_arbitrary_dqnn(model, input_coords, model_name="DQNN", save_path=None):
+    """
+    Performs inference on DQNN model using arbitrary input coordinates [0, 1].
+    Uses static methods from AudioQuantumDataset for encoding/decoding.
+    Plots the normalized model output against the input coordinates.
+
+    Args:
+        model (DQNN): Trained DQNN model.
+        input_coords (list or np.ndarray): Input coordinates in range [0, 1].
+        model_name (str): Name of the model for the plot title. Defaults to "DQNN".
+        save_path (str, optional): Path to save the waveform plot. Defaults to None.
+    """
+    # Validate and prepare input coordinates
+    coords_np = np.array(input_coords)
+    if np.any(coords_np < 0) or np.any(coords_np > 1):
+        raise ValueError("Input coordinates must be within the range [0, 1].")
+    if len(np.unique(coords_np)) != len(coords_np):
+        print("Warning: Input coordinates contain duplicates. Using unique values and sorting.")
+        coords_np = np.unique(coords_np)
+    if not np.all(np.diff(coords_np) >= 0):
+        print("Warning: Input coordinates are not sorted. Sorting them now.")
+        coords_np = np.sort(coords_np)
+
+    # Perform inference point-by-point (due to quantum state handling)
+    print(f"Performing {model_name} inference on {len(coords_np)} arbitrary coordinates...")
+    normalized_predictions = []
+    
+    for coord in tqdm(coords_np, desc=f"{model_name} Arbitrary Inference"):
+        time_state = AudioQuantumDataset.encode_time(coord)
+        output_state = model.predict(time_state)
+        norm_amp = AudioQuantumDataset.decode_amplitude(output_state)
+        normalized_predictions.append(norm_amp)
+        
+    normalized_predictions = np.array(normalized_predictions)
+    print("Inference and decoding complete.\n")
+
+    # Plot normalized output vs input coordinates
+    plot_title = f"{model_name} Inference: {len(coords_np)} samples in [{coords_np.min():.3f}, {coords_np.max():.3f}]"
+    fig = plt.figure(figsize=(10, 4))
+    plt.plot(coords_np, normalized_predictions, marker='.', linestyle='',
+             markersize=4, alpha=0.75, color='mediumseagreen')
+    plt.title(plot_title, fontsize=18) # Use auto-generated title
+    plt.xlabel("Input", fontsize=14)
+    plt.ylabel("Output", fontsize=14)
+    plt.ylim(-1.1, 1.1)
+    plt.grid(True)
+
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        print(f"Saved arbitrary inference plot to {save_path}")
+    plt.show()
+
+
+def inference_audio_dqnn(model, dataset, inference_sr, inference_seconds,
+                              model_name="DQNN", save_audio_path=None, save_plot_path=None):
+    """
+    Performs DQNN inference and compares output waveform with processed ground truth.
+    Uses static and dataset methods for encoding/decoding and denormalization.
+    Generates input coordinates based on the dataset's desired audio duration
+    and the desired inference_sr. Resamples/truncates the ground truth audio
+    to match inference_sr and inference_seconds for comparison. Plots the model's
+    generated waveform against the processed ground truth. Plays audio clips. 
+
+    Args:
+        model (DQNN): Trained DQNN model.
+        dataset (AudioQuantumDataset): Dataset instance for the original audio.
+        inference_sr (int): Target sample rate for processing and playback.
+        inference_seconds (float): Target duration for comparison.
+        model_name (str): Name of the model for the plot title and audio labels. Defaults to "DQNN".
+        save_audio_path (str, optional): Path to save predicted audio. Defaults to None.
+        save_plot_path (str, optional): Path to save waveform plot. Defaults to None.
+    """
+    
+    print(f"\nAttempting {model_name} inference for {inference_seconds:.2f} s at {inference_sr} Hz")
+    
+    # --- Process Ground Truth ---
+    original_data = dataset.original_data
+    orig_sr = dataset.sample_rate
+    orig_duration = len(original_data) / orig_sr
+
+    # Resample ground truth to inference SR
+    try:
+        resampled_truth = librosa.resample(original_data, orig_sr=orig_sr, target_sr=inference_sr)
+    except Exception as e:
+        print(f"Error during resampling: {e}")
+        return
+
+    # Truncate resampled ground truth to inference duration
+    num_samples_target = int(inference_seconds * inference_sr)
+    current_duration = inference_seconds
+    if num_samples_target > len(resampled_truth):
+        print(f"Warning: Requested duration ({inference_seconds:.2f}s) exceeds the original audio's duration ({orig_duration:.2f}s)")
+        print(f"\tUsing the original audio's duration while resampling ({len(resampled_truth)} samples at {inference_sr} Hz)")
+        num_samples_target = len(resampled_truth)
+        current_duration = len(resampled_truth) / inference_sr # Use actual duration
+    processed_truth = resampled_truth[:num_samples_target] # Renamed variable
+    print(f"Ground truth adjusted for comparison: {num_samples_target} samples "
+          f"at {inference_sr} Hz ({current_duration:.2f} s)")
+
+    # --- Generate Model Input & Predict ---
+    print(f"Generating input coordinates and running inference...")
+    # Coords based on *original duration* and *inference SR*, then truncated using *current duration*
+    num_coords = int(orig_duration * inference_sr)
+    coords_full = np.linspace(0, 1, num_coords)
+    input_coords = coords_full[:num_samples_target]
+    
+    # Predict normalized output point-by-point
+    normalized_predictions = []
+    for coord in tqdm(input_coords, desc=f"{model_name} Audio Inference"):
+        time_state = AudioQuantumDataset.encode_time(coord)             # Encode time coord
+        output_state = model.predict(time_state)                       # Predict output quantum state
+        norm_amp = AudioQuantumDataset.decode_amplitude(output_state)  # Decode to normalized amplitude
+        normalized_predictions.append(norm_amp)
+
+    # Denormalize using dataset parameters
+    denormalized_predictions = dataset.amplitude_to_original(np.array(normalized_predictions))
+    print("Inference and decoding and denormalization complete.")
+
+    # Ensure lengths match
+    if len(denormalized_predictions) != len(processed_truth):
+        min_len = min(len(denormalized_predictions), len(processed_truth))
+        denormalized_predictions = denormalized_predictions[:min_len]
+        processed_truth = processed_truth[:min_len]
+        print(f"\nWarning: Length mismatch between prediction length ({len(denormalized_predictions)})"
+              f"and adjusted ground truth length ({len(processed_truth)}), truncating to smaller length ({min_len})")
+
+    # --- Plotting (uses plot_audio_waveform from this file) ---
+    print("Plotting waveform comparison...")
+    formatted_sr = f"{inference_sr} Hz" if inference_sr < 1000 else f"{(inference_sr / 1000.0):.1f} kHz"
+    plot_title = f"{model_name} Inference: {current_duration:.2f} s at {formatted_sr}"
+    # Use local function
+    plot_audio_waveform(
+        predictions=denormalized_predictions,
+        ground_truth=processed_truth,
+        sample_rate=inference_sr,
+        title=plot_title, # Pass auto-generated title
+        seconds=current_duration,
+        save_path=save_plot_path,
+        color_prediction='mediumseagreen',
+        color_original='mediumpurple',  
+    )
+
+    # --- Audio Playback (uses play_audio from this file) ---
+    print("Playing audio clips...")
+    display(play_audio(processed_truth, inference_sr,
+                       f"Ground Truth Adjusted ({formatted_sr})"))
+    display(play_audio(denormalized_predictions, inference_sr,
+                       f"{model_name} Inference Audio ({formatted_sr})"))
+
+    # --- Optional: Save Predicted Audio ---
+    if save_audio_path:
+        try:
+            sf.write(save_audio_path, denormalized_predictions, inference_sr)
+            print(f"Saved predicted audio to {save_audio_path}")
+        except Exception as e:
+            print(f"Error saving audio: {e}")

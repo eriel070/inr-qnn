@@ -5,6 +5,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import IPython.display as ipd
 import soundfile as sf
+import librosa
 from tqdm.notebook import tqdm
 
 class AudioSignalDataset(Dataset):
@@ -225,14 +226,13 @@ def evaluate_audio_model(model, dataset, device='cuda'):
         normalized_predictions = model(time_points).cpu().numpy().flatten()
     
     # Denormalize predictions back to original amplitude range
-    predictions = np.array([
-        dataset.denormalize_amplitude_value(amp) for amp in normalized_predictions
-    ])
+    predictions = dataset.denormalize_amplitude_value(normalized_predictions)
     
     return predictions
 
 
-def plot_audio_waveform(predictions, ground_truth, sample_rate=44100, title="Waveform Comparison", seconds=None, save_path=None):
+def plot_audio_waveform(predictions, ground_truth, sample_rate=44100, title="Waveform Comparison",
+                        seconds=None, save_path=None, color_original='tab:blue', color_prediction='tab:orange'):
     """
     Plot comparison between predicted and ground truth audio waveforms.
     
@@ -252,8 +252,8 @@ def plot_audio_waveform(predictions, ground_truth, sample_rate=44100, title="Wav
     
     fig = plt.figure(figsize=(12, 5))
     t = np.arange(samples) / sample_rate
-    plt.plot(t, ground_truth[:samples], label='Target', alpha=0.7)
-    plt.plot(t, predictions[:samples], label='Output', alpha=0.7)
+    plt.plot(t, ground_truth[:samples], label='Target', alpha=0.7, color=color_original)
+    plt.plot(t, predictions[:samples], label='Output', alpha=0.7, color=color_prediction)
     plt.title(title, fontsize=22)
     plt.xlabel('Time (s)', fontsize=16)
     plt.ylabel('Amplitude', fontsize=16)
@@ -283,8 +283,8 @@ def play_audio(audio_data, sample_rate=44100, title="Audio"):
     return ipd.Audio(audio_data, rate=sample_rate)
 
 
-def evaluate_and_visualize(model, dataset, model_name, seconds_to_show=None, 
-                       save_audio=None, save_plot=None):
+def evaluate_and_visualize(model, dataset, device, model_name,
+                           seconds_to_show=None, save_audio=None, save_plot=None):
     """
     Comprehensive evaluation and visualization of a trained model.
     
@@ -303,7 +303,7 @@ def evaluate_and_visualize(model, dataset, model_name, seconds_to_show=None,
     ground_truth = dataset.get_original_audio()
     
     # Generate predictions and denormalize them
-    predictions = evaluate_audio_model(model, dataset)
+    predictions = evaluate_audio_model(model, dataset, device)
     
     # Make sure predictions match the length of ground truth
     if len(predictions) != len(ground_truth):
@@ -354,3 +354,161 @@ def evaluate_and_visualize(model, dataset, model_name, seconds_to_show=None,
         print(f"Saved predicted audio to {save_audio}")
     
     return predictions, ground_truth, mse, psnr
+
+
+#################################################################################
+
+def inference_arbitrary(model, input_coords, device, model_name="Classical INR", save_path=None):
+    """
+    Performs inference using arbitrary input coordinates [0, 1].
+    Plots the normalized model output against the input coordinates.
+    
+    Args:
+        model: Trained classical INR model (e.g., SIREN, GaborMFN).
+        input_coords (list or np.ndarray): Input coordinates in range [0, 1].
+        device: PyTorch device ('cuda' or 'cpu').
+        model_name (str): Name of the model for the plot title.
+        save_path (str, optional): Path to save the waveform plot. Defaults to None.
+    """
+    model.eval()
+    model.to(device)
+
+    # Validate and prepare input coordinates
+    coords_np = np.array(input_coords, dtype=np.float32)
+    
+    if np.any(coords_np < 0) or np.any(coords_np > 1):
+        raise ValueError("Input coordinates must be within the range [0, 1].")
+    if len(np.unique(coords_np)) != len(coords_np):
+        print("Warning: Input coordinates contain duplicates. Using unique values and sorting.")
+        coords_np = np.unique(coords_np)
+    if not np.all(np.diff(coords_np) >= 0):
+        print("Warning: Input coordinates are not sorted. Sorting them now.")
+        coords_np = np.sort(coords_np)
+
+    coords_tensor = torch.tensor(coords_np, dtype=torch.float32).unsqueeze(1).to(device)
+
+    # Perform inference
+    print(f"Performing {model_name} inference on {len(coords_tensor)} arbitrary coordinates...")
+    with torch.no_grad():
+        # Output is expected in the normalized range used during training
+        normalized_predictions = model(coords_tensor).cpu().numpy().flatten()
+    print("Inference complete.\n")
+
+    # Plot normalized output vs input coordinates
+    plot_title = f"{model_name} Inference: {len(coords_np)} samples in [{coords_np.min():.3f}, {coords_np.max():.3f}]"
+    fig = plt.figure(figsize=(10, 4))
+    plt.plot(coords_np, normalized_predictions, marker='.', linestyle='',
+             markersize=4, alpha=0.75, color='mediumseagreen')
+    plt.title(plot_title, fontsize=18) # Use auto-generated title
+    plt.xlabel("Input", fontsize=14)
+    plt.ylabel("Output", fontsize=14)
+    plt.ylim(-1.1, 1.1)
+    plt.grid(True)
+
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        print(f"Saved arbitrary inference plot to {save_path}")
+    plt.show()
+
+
+def inference_audio(model, dataset, inference_sr, inference_seconds, device,
+                         model_name="Classical INR", save_audio_path=None, save_plot_path=None):
+    """
+    Performs inference and compares output waveform with processed ground truth.
+    Generates input coordinates based on the dataset's desired audio duration
+    and the desired inference_sr. Resamples/truncates the ground truth audio
+    to match inference_sr and inference_seconds for comparison. Plots the model's
+    generated waveform against the processed ground truth. Plays audio clips. 
+    
+    Args:
+        model: Trained classical INR model (e.g., SIREN, GaborMFN).
+        dataset (AudioSignalDataset): Dataset instance for the original audio.
+        inference_sr (int): Target sample rate for processing and playback.
+        inference_seconds (float): Target duration for comparison.
+        device: PyTorch device ('cuda' or 'cpu').
+        model_name (str): Name of the model for the plot title and audio labels.
+        save_audio_path (str, optional): Path to save predicted audio. Defaults to None.
+        save_plot_path (str, optional): Path to save waveform plot. Defaults to None.
+    """
+    model.eval()
+    model.to(device)
+
+    print(f"\nAttempting {model_name} inference for {inference_seconds:.2f} s at {inference_sr} Hz")
+    
+    # --- Process Ground Truth ---
+    original_data = dataset.original_data
+    orig_sr = dataset.sample_rate
+    orig_duration = len(original_data) / orig_sr
+
+    # Resample ground truth to inference SR
+    try:
+        resampled_truth = librosa.resample(original_data, orig_sr=orig_sr, target_sr=inference_sr)
+    except Exception as e:
+        print(f"Error during resampling: {e}")
+        return
+
+    # Truncate resampled ground truth to inference duration
+    num_samples_target = int(inference_seconds * inference_sr)
+    current_duration = inference_seconds
+    if num_samples_target > len(resampled_truth):
+        print(f"Warning: Requested duration ({inference_seconds:.2f}s) exceeds the original audio's duration ({orig_duration:.2f}s)")
+        print(f"\tUsing the original audio's duration while resampling ({len(resampled_truth)} samples at {inference_sr} Hz)")
+        num_samples_target = len(resampled_truth)
+        current_duration = len(resampled_truth) / inference_sr # Use actual duration
+    processed_truth = resampled_truth[:num_samples_target] # Renamed variable
+    print(f"Ground truth adjusted for comparison: {num_samples_target} samples "
+          f"at {inference_sr} Hz ({current_duration:.2f} s)")
+
+    # --- Generate Model Input & Predict ---
+    print(f"Generating input coordinates and running inference...")
+    # Coords based on *original duration* and *inference SR*, then truncated using *current duration*
+    num_coords = int(orig_duration * inference_sr)
+    coords_full = torch.linspace(0, 1, num_coords).unsqueeze(1)
+    input_coords = coords_full[:num_samples_target].to(device)
+
+    # Predict normalized output
+    with torch.no_grad():
+        normalized_predictions = model(input_coords).cpu().numpy().flatten()
+
+    # Denormalize using dataset parameters
+    denormalized_predictions = dataset.denormalize_amplitude_value(normalized_predictions)
+    print("Inference and denormalization complete.")
+
+    # Ensure lengths match
+    if len(denormalized_predictions) != len(processed_truth):
+        min_len = min(len(denormalized_predictions), len(processed_truth))
+        denormalized_predictions = denormalized_predictions[:min_len]
+        processed_truth = processed_truth[:min_len]
+        print(f"\nWarning: Length mismatch between prediction length ({len(denormalized_predictions)})"
+              f"and adjusted ground truth length ({len(processed_truth)}), truncating to smaller length ({min_len})")
+
+    # --- Plotting (uses plot_audio_waveform from this file) ---
+    print("Plotting waveform comparison...")
+    formatted_sr = f"{inference_sr} Hz" if inference_sr < 1000 else f"{(inference_sr / 1000.0):.1f} kHz"
+    plot_title = f"{model_name} Inference: {current_duration:.2f} s at {formatted_sr}"
+    # Use local function
+    plot_audio_waveform(
+        predictions=denormalized_predictions,
+        ground_truth=processed_truth,
+        sample_rate=inference_sr,
+        title=plot_title, # Pass auto-generated title
+        seconds=current_duration,
+        save_path=save_plot_path,
+        color_prediction='mediumseagreen',
+        color_original='mediumpurple',  
+    )
+
+    # --- Audio Playback (uses play_audio from this file) ---
+    print("Playing audio clips...")
+    display(play_audio(processed_truth, inference_sr,
+                       f"Ground Truth Adjusted ({formatted_sr})"))
+    display(play_audio(denormalized_predictions, inference_sr,
+                       f"{model_name} Inference Audio ({formatted_sr})"))
+
+    # --- Optional: Save Predicted Audio ---
+    if save_audio_path:
+        try:
+            sf.write(save_audio_path, denormalized_predictions, inference_sr)
+            print(f"Saved predicted audio to {save_audio_path}")
+        except Exception as e:
+            print(f"Error saving audio: {e}")
